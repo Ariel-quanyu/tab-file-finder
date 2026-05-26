@@ -1,0 +1,43 @@
+{
+  "name": "tab-file-finder",
+  "displayName": "Tab File Finder",
+  "description": "Quickly find and open files from open tabs or the entire workspace.",
+  "version": "0.0.1",
+  "publisher": "local-dev",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onCommand:tabFileFinder.searchOpenFiles",
+    "onCommand:tabFileFinder.searchWorkspaceFiles"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "tabFileFinder.searchOpenFiles",
+        "title": "Tab File Finder: Search Open Files"
+      },
+      {
+        "command": "tabFileFinder.searchWorkspaceFiles",
+        "title": "Tab File Finder: Search Workspace Files"
+      }
+    ]
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "lint": "eslint src --ext ts",
+    "test": "echo 'No automated tests yet.'"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.12",
+    "@types/vscode": "^1.90.0",
+    "eslint": "^9.8.0",
+    "typescript": "^5.5.4"
+  }
+}
