@@ -25,7 +25,33 @@
         "command": "tabFileFinder.searchWorkspaceFiles",
         "title": "Tab File Finder: Search Workspace Files"
       }
-    ]
+    ],
+    "keybindings": [
+      {
+        "command": "tabFileFinder.searchWorkspaceFiles",
+        "key": "ctrl+shift+q",
+        "when": "editorTextFocus"
+      },
+      {
+        "command": "tabFileFinder.searchOpenFiles",
+        "key": "ctrl+alt+shift+t",
+        "when": "editorTextFocus"
+      }
+    ],
+    "configuration": {
+      "type": "object",
+      "title": "Tab File Finder",
+      "properties": {
+        "tabFileFinder.maxResults": {
+          "type": "number",
+          "default": 20,
+          "minimum": 20,
+          "maximum": 50,
+          "enum": [20, 50],
+          "description": "Maximum number of search results shown by Tab File Finder. Choose either 20 or 50."
+        }
+      }
+    }
   },
   "scripts": {
     "compile": "tsc -p ./",
