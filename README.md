@@ -18,20 +18,24 @@ In large projects, finding the right file can become slow and distracting, espec
 
 - **Generated Folder Exclusions**
   - Skips common generated, dependency, and system folders, including `node_modules`, `.git`, `out`, `dist`, `build`, `.quarto`, and `__pycache__`.
+  - Useful project configuration files such as `.gitignore`, `README.md`, `package.json`, `.vscode/launch.json`, and `.vscode/tasks.json` remain searchable.
 
 - **Optional Open File Search**
   - Command: **Tab File Finder: Search Open Files**
   - Searches only files currently open in VS Code tabs/documents.
+  - This command is optional. The main recommended workflow is workspace search with `Ctrl+P`.
 
 - **Fast Keyboard Access**
-  - Keyboard shortcut for **Search Workspace Files**: **Alt+W**.
-
+  - Keyboard shortcut for **Search Workspace Files**: **Ctrl+P**.
+  - `Ctrl+P` opens the workspace search from anywhere inside VS Code.
 ## Keyboard Shortcut
 
-- **Alt+W** runs **Tab File Finder: Search Workspace Files**.
-- Start typing to filter workspace files live by name or relative path.
-- Select a result to open it in the editor.
+- **Ctrl+P** runs **Tab File Finder: Search Workspace Files**.
+- Start typing to filter workspace files and folders live by name or relative path.
+- Select a file result to open it in the editor.
+- Select a folder result to reveal it in the VS Code Explorer.
 
+> Note: This extension is intended to replace VS Code's default `Ctrl+P` quick open behavior.
 ## Example Use Cases
 
 - Jump to a file quickly when you remember part of its name but not its location.
