@@ -29,12 +29,7 @@
     "keybindings": [
       {
         "command": "tabFileFinder.searchWorkspaceFiles",
-        "key": "ctrl+shift+q",
-        "when": "editorTextFocus"
-      },
-      {
-        "command": "tabFileFinder.searchOpenFiles",
-        "key": "ctrl+alt+shift+t",
+        "key": "alt+w",
         "when": "editorTextFocus"
       }
     ],

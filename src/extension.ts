@@ -12,6 +12,7 @@ type WorkspaceFileEntry = {
   relativePath: string;
   relativePathLower: string;
   isUsefulFile: boolean;
+  isTopLevelFile: boolean;
 };
 
 export function activate(context: vscode.ExtensionContext): void {
@@ -71,21 +72,31 @@ async function searchWorkspaceFiles(): Promise<void> {
   quickPick.matchOnDescription = true;
   quickPick.ignoreFocusOut = true;
   quickPick.busy = true;
+  quickPick.items = [];
   quickPick.show();
 
-  const excluded = '**/{node_modules,.git,out,dist,build,.quarto,__pycache__}/**';
-  const workspaceUris = await vscode.workspace.findFiles('**/*', excluded);
-  const entries = workspaceUris
-    .filter((uri) => !isExcludedWorkspaceFile(uri))
-    .map((uri) => createWorkspaceFileEntry(uri, workspaceFolder));
+  const entriesByPath = new Map<string, WorkspaceFileEntry>();
+  let quickPickDisposed = false;
 
-  const updateItems = (value: string) => {
-    const normalizedKeyword = value.trim().toLowerCase();
-    quickPick.items = getWorkspaceSearchItems(entries, normalizedKeyword).slice(0, getMaxResults());
+  const addEntries = (uris: vscode.Uri[]) => {
+    for (const uri of uris) {
+      if (isExcludedWorkspaceFile(uri) || entriesByPath.has(uri.fsPath)) {
+        continue;
+      }
+
+      const folder = vscode.workspace.getWorkspaceFolder(uri) ?? workspaceFolder;
+      entriesByPath.set(uri.fsPath, createWorkspaceFileEntry(uri, folder));
+    }
   };
 
-  updateItems('');
-  quickPick.busy = false;
+  const updateItems = (value: string) => {
+    if (quickPickDisposed) {
+      return;
+    }
+
+    const normalizedKeyword = value.trim().toLowerCase();
+    quickPick.items = getWorkspaceSearchItems([...entriesByPath.values()], normalizedKeyword).slice(0, getMaxResults());
+  };
 
   const disposables: vscode.Disposable[] = [];
   disposables.push(
@@ -98,10 +109,31 @@ async function searchWorkspaceFiles(): Promise<void> {
       }
     }),
     quickPick.onDidHide(() => {
+      quickPickDisposed = true;
       disposables.forEach((disposable) => disposable.dispose());
       quickPick.dispose();
     })
   );
+
+  void (async () => {
+    try {
+      addEntries(await getTopLevelWorkspaceFileUris());
+      updateItems(quickPick.value);
+
+      const excluded = '**/{node_modules,.git,out,dist,build,.quarto,__pycache__}/**';
+      addEntries(await vscode.workspace.findFiles('**/*', excluded));
+      updateItems(quickPick.value);
+    } catch (error) {
+      if (!quickPickDisposed) {
+        const message = error instanceof Error ? error.message : String(error);
+        vscode.window.showErrorMessage(`Unable to search workspace files: ${message}`);
+      }
+    } finally {
+      if (!quickPickDisposed) {
+        quickPick.busy = false;
+      }
+    }
+  })();
 }
 
 function isExcludedWorkspaceFile(uri: vscode.Uri): boolean {
@@ -126,7 +158,7 @@ function isExcludedWorkspaceFile(uri: vscode.Uri): boolean {
 }
 
 function createWorkspaceFileEntry(uri: vscode.Uri, workspaceFolder: vscode.WorkspaceFolder): WorkspaceFileEntry {
-  const relativePath = toRelativePath(uri, workspaceFolder);
+  const relativePath = normalizeRelativePath(toRelativePath(uri, workspaceFolder));
   const fileName = path.basename(uri.fsPath);
   return {
     uri,
@@ -134,7 +166,8 @@ function createWorkspaceFileEntry(uri: vscode.Uri, workspaceFolder: vscode.Works
     fileNameLower: fileName.toLowerCase(),
     relativePath,
     relativePathLower: relativePath.toLowerCase(),
-    isUsefulFile: isUsefulProjectFile(relativePath.toLowerCase())
+    isUsefulFile: isUsefulProjectFile(relativePath.toLowerCase()),
+    isTopLevelFile: !relativePath.includes('/')
   };
 }
 
@@ -164,7 +197,9 @@ function getWorkspaceSearchItems(entries: WorkspaceFileEntry[], normalizedKeywor
         pathIndex: hasPathMatch ? pathIndex : Number.MAX_SAFE_INTEGER,
         hasFileNameMatch,
         hasPathMatch,
-        pathDepth: entry.relativePath.split(path.sep).length,
+        pathDepth: entry.relativePath.split('/').length,
+        pathLength: entry.relativePath.length,
+        topLevelPriority: entry.isTopLevelFile ? 0 : 1,
         usefulPriority: entry.isUsefulFile ? 0 : 1
       };
     })
@@ -180,14 +215,20 @@ function getWorkspaceSearchItems(entries: WorkspaceFileEntry[], normalizedKeywor
     if (a.hasPathMatch !== b.hasPathMatch) {
       return a.hasPathMatch ? -1 : 1;
     }
-    if (a.pathIndex !== b.pathIndex) {
+    if (!a.hasFileNameMatch && a.pathIndex !== b.pathIndex) {
       return a.pathIndex - b.pathIndex;
+    }
+    if (a.topLevelPriority !== b.topLevelPriority) {
+      return a.topLevelPriority - b.topLevelPriority;
     }
     if (a.usefulPriority !== b.usefulPriority) {
       return a.usefulPriority - b.usefulPriority;
     }
     if (a.pathDepth !== b.pathDepth) {
       return a.pathDepth - b.pathDepth;
+    }
+    if (a.pathLength !== b.pathLength) {
+      return a.pathLength - b.pathLength;
     }
     return a.entry.relativePath.localeCompare(b.entry.relativePath);
   });
@@ -197,6 +238,22 @@ function getWorkspaceSearchItems(entries: WorkspaceFileEntry[], normalizedKeywor
     description: meta.entry.relativePath,
     uri: meta.entry.uri
   }));
+}
+
+async function getTopLevelWorkspaceFileUris(): Promise<vscode.Uri[]> {
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  const results: vscode.Uri[] = [];
+
+  for (const folder of folders) {
+    const entries = await vscode.workspace.fs.readDirectory(folder.uri);
+    for (const [name, fileType] of entries) {
+      if (fileType === vscode.FileType.File) {
+        results.push(vscode.Uri.joinPath(folder.uri, name));
+      }
+    }
+  }
+
+  return results;
 }
 
 async function promptForKeyword(placeHolder: string): Promise<string | undefined> {
@@ -258,4 +315,8 @@ function getMaxResults(): number {
 function toRelativePath(uri: vscode.Uri, workspaceFolder?: vscode.WorkspaceFolder): string {
   const folder = workspaceFolder ?? vscode.workspace.getWorkspaceFolder(uri);
   return folder ? path.relative(folder.uri.fsPath, uri.fsPath) : path.basename(uri.fsPath);
+}
+
+function normalizeRelativePath(relativePath: string): string {
+  return relativePath.replace(/\\/g, '/');
 }

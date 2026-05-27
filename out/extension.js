@@ -82,18 +82,26 @@ async function searchWorkspaceFiles() {
     quickPick.matchOnDescription = true;
     quickPick.ignoreFocusOut = true;
     quickPick.busy = true;
+    quickPick.items = [];
     quickPick.show();
-    const excluded = '**/{node_modules,.git,out,dist,build,.quarto,__pycache__}/**';
-    const workspaceUris = await vscode.workspace.findFiles('**/*', excluded);
-    const entries = workspaceUris
-        .filter((uri) => !isExcludedWorkspaceFile(uri))
-        .map((uri) => createWorkspaceFileEntry(uri, workspaceFolder));
-    const updateItems = (value) => {
-        const normalizedKeyword = value.trim().toLowerCase();
-        quickPick.items = getWorkspaceSearchItems(entries, normalizedKeyword).slice(0, getMaxResults());
+    const entriesByPath = new Map();
+    let quickPickDisposed = false;
+    const addEntries = (uris) => {
+        for (const uri of uris) {
+            if (isExcludedWorkspaceFile(uri) || entriesByPath.has(uri.fsPath)) {
+                continue;
+            }
+            const folder = vscode.workspace.getWorkspaceFolder(uri) ?? workspaceFolder;
+            entriesByPath.set(uri.fsPath, createWorkspaceFileEntry(uri, folder));
+        }
     };
-    updateItems('');
-    quickPick.busy = false;
+    const updateItems = (value) => {
+        if (quickPickDisposed) {
+            return;
+        }
+        const normalizedKeyword = value.trim().toLowerCase();
+        quickPick.items = getWorkspaceSearchItems([...entriesByPath.values()], normalizedKeyword).slice(0, getMaxResults());
+    };
     const disposables = [];
     disposables.push(quickPick.onDidChangeValue((value) => updateItems(value)), quickPick.onDidAccept(async () => {
         const picked = quickPick.selectedItems[0];
@@ -102,9 +110,30 @@ async function searchWorkspaceFiles() {
             quickPick.hide();
         }
     }), quickPick.onDidHide(() => {
+        quickPickDisposed = true;
         disposables.forEach((disposable) => disposable.dispose());
         quickPick.dispose();
     }));
+    void (async () => {
+        try {
+            addEntries(await getTopLevelWorkspaceFileUris());
+            updateItems(quickPick.value);
+            const excluded = '**/{node_modules,.git,out,dist,build,.quarto,__pycache__}/**';
+            addEntries(await vscode.workspace.findFiles('**/*', excluded));
+            updateItems(quickPick.value);
+        }
+        catch (error) {
+            if (!quickPickDisposed) {
+                const message = error instanceof Error ? error.message : String(error);
+                vscode.window.showErrorMessage(`Unable to search workspace files: ${message}`);
+            }
+        }
+        finally {
+            if (!quickPickDisposed) {
+                quickPick.busy = false;
+            }
+        }
+    })();
 }
 function isExcludedWorkspaceFile(uri) {
     const relativePath = uri.path.toLowerCase();
@@ -123,7 +152,7 @@ function isExcludedWorkspaceFile(uri) {
     return /\.(js|css|html|json|png|svg|woff2?|ttf|map)$/i.test(relativePath);
 }
 function createWorkspaceFileEntry(uri, workspaceFolder) {
-    const relativePath = toRelativePath(uri, workspaceFolder);
+    const relativePath = normalizeRelativePath(toRelativePath(uri, workspaceFolder));
     const fileName = path.basename(uri.fsPath);
     return {
         uri,
@@ -131,7 +160,8 @@ function createWorkspaceFileEntry(uri, workspaceFolder) {
         fileNameLower: fileName.toLowerCase(),
         relativePath,
         relativePathLower: relativePath.toLowerCase(),
-        isUsefulFile: isUsefulProjectFile(relativePath.toLowerCase())
+        isUsefulFile: isUsefulProjectFile(relativePath.toLowerCase()),
+        isTopLevelFile: !relativePath.includes('/')
     };
 }
 function isUsefulProjectFile(relativePathLower) {
@@ -157,7 +187,9 @@ function getWorkspaceSearchItems(entries, normalizedKeyword) {
             pathIndex: hasPathMatch ? pathIndex : Number.MAX_SAFE_INTEGER,
             hasFileNameMatch,
             hasPathMatch,
-            pathDepth: entry.relativePath.split(path.sep).length,
+            pathDepth: entry.relativePath.split('/').length,
+            pathLength: entry.relativePath.length,
+            topLevelPriority: entry.isTopLevelFile ? 0 : 1,
             usefulPriority: entry.isUsefulFile ? 0 : 1
         };
     })
@@ -172,14 +204,20 @@ function getWorkspaceSearchItems(entries, normalizedKeyword) {
         if (a.hasPathMatch !== b.hasPathMatch) {
             return a.hasPathMatch ? -1 : 1;
         }
-        if (a.pathIndex !== b.pathIndex) {
+        if (!a.hasFileNameMatch && a.pathIndex !== b.pathIndex) {
             return a.pathIndex - b.pathIndex;
+        }
+        if (a.topLevelPriority !== b.topLevelPriority) {
+            return a.topLevelPriority - b.topLevelPriority;
         }
         if (a.usefulPriority !== b.usefulPriority) {
             return a.usefulPriority - b.usefulPriority;
         }
         if (a.pathDepth !== b.pathDepth) {
             return a.pathDepth - b.pathDepth;
+        }
+        if (a.pathLength !== b.pathLength) {
+            return a.pathLength - b.pathLength;
         }
         return a.entry.relativePath.localeCompare(b.entry.relativePath);
     });
@@ -188,6 +226,19 @@ function getWorkspaceSearchItems(entries, normalizedKeyword) {
         description: meta.entry.relativePath,
         uri: meta.entry.uri
     }));
+}
+async function getTopLevelWorkspaceFileUris() {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+    const results = [];
+    for (const folder of folders) {
+        const entries = await vscode.workspace.fs.readDirectory(folder.uri);
+        for (const [name, fileType] of entries) {
+            if (fileType === vscode.FileType.File) {
+                results.push(vscode.Uri.joinPath(folder.uri, name));
+            }
+        }
+    }
+    return results;
 }
 async function promptForKeyword(placeHolder) {
     return vscode.window.showInputBox({
@@ -236,5 +287,8 @@ function getMaxResults() {
 function toRelativePath(uri, workspaceFolder) {
     const folder = workspaceFolder ?? vscode.workspace.getWorkspaceFolder(uri);
     return folder ? path.relative(folder.uri.fsPath, uri.fsPath) : path.basename(uri.fsPath);
+}
+function normalizeRelativePath(relativePath) {
+    return relativePath.replace(/\\/g, '/');
 }
 //# sourceMappingURL=extension.js.map

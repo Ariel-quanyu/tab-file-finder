@@ -1,35 +1,44 @@
 # Tab File Finder (VS Code Extension)
 
-Tab File Finder is a Visual Studio Code extension that helps developers quickly locate files in large codebases. It provides fast, keyword-based search across workspace files, currently opened files, folders, and other project items so you can navigate projects more efficiently.
+Tab File Finder is a Visual Studio Code extension that helps developers quickly locate and open files across the current workspace. Its primary command, **Tab File Finder: Search Workspace Files**, provides live search by file name and relative path so you can navigate large projects without leaving the editor.
 
 ## Main Problem It Solves
 
-In large projects, finding the right file can become slow and distracting—especially when you have many open tabs or deep folder structures. Tab File Finder reduces that friction by giving you focused, in-editor search commands to jump directly to the file you need.
+In large projects, finding the right file can become slow and distracting, especially with deeply nested folders. Tab File Finder reduces that friction with a focused workspace file search that updates as you type.
 
 ## Features
 
-- **Search Open Files**
-  - Command: **Tab File Finder: Search Open Files**
-  - Searches files currently opened in VS Code tabs/documents.
-  - Matches keywords against both file names and relative paths.
-  - Displays results in a Quick Pick list and opens the selected file.
-
-- **Search Workspace Files**
+- **Live Workspace File Search**
   - Command: **Tab File Finder: Search Workspace Files**
-  - Searches files across the current workspace.
-  - Matches keywords against both file names and relative paths.
-  - Excludes common generated/system folders: `node_modules`, `.git`, `dist`, `build`.
-  - Displays results in a Quick Pick list and opens the selected file.
+  - Searches files across the entire current workspace, not just opened tabs.
+  - Updates results while you type; you do not need to press Enter before seeing matches.
+  - Matches against both file names and relative paths.
+  - Works across deeply nested folders.
+  - Opens the selected file from a Quick Pick list.
+
+- **Generated Folder Exclusions**
+  - Skips common generated, dependency, and system folders, including `node_modules`, `.git`, `out`, `dist`, `build`, `.quarto`, and `__pycache__`.
+
+- **Optional Open File Search**
+  - Command: **Tab File Finder: Search Open Files**
+  - Searches only files currently open in VS Code tabs/documents.
 
 - **Fast Keyboard Access**
-  - Keyboard shortcut for **Search Workspace Files**: **Ctrl+Shift+Q**.
+  - Keyboard shortcut for **Search Workspace Files**: **Alt+W**.
+
+## Keyboard Shortcut
+
+- **Alt+W** runs **Tab File Finder: Search Workspace Files**.
+- Start typing to filter workspace files live by name or relative path.
+- Select a result to open it in the editor.
 
 ## Example Use Cases
 
 - Jump to a file quickly when you remember part of its name but not its location.
 - Find one of many similarly named files in a monorepo or layered architecture.
-- Switch between frequently used open files without manually scanning tabs.
-- Locate project items in deep folder hierarchies during debugging or feature work.
+- Locate files in deeply nested project folders.
+- Search across the full workspace even when the target file is not already open.
+- Open project files while avoiding noise from generated and dependency folders.
 
 ## Tech Stack
 
