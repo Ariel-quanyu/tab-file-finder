@@ -125,7 +125,7 @@ async function searchWorkspaceFiles(): Promise<void> {
   quickPick.title = 'Tab File Finder: Search Workspace Files';
   quickPick.placeholder = 'Type a keyword to search workspace files';
   quickPick.matchOnDescription = true;
-  quickPick.ignoreFocusOut = true;
+  quickPick.ignoreFocusOut = false;
   quickPick.busy = true;
   quickPick.items = [];
   quickPick.show();
@@ -149,7 +149,10 @@ async function searchWorkspaceFiles(): Promise<void> {
     }
 
     const normalizedKeyword = value.trim().toLowerCase();
-    quickPick.items = getWorkspaceSearchItems([...entriesByPath.values()], normalizedKeyword).slice(0, settings.maxResults);
+    quickPick.items = limitQuickPickItemsForSafety(
+      getWorkspaceSearchItems([...entriesByPath.values()], normalizedKeyword),
+      settings.maxResults
+    );
   };
 
   const disposables: vscode.Disposable[] = [];
@@ -408,13 +411,11 @@ async function showResultsQuickPick(
   }
 
   const maxResults = getMaxResults();
-  const items: FileQuickPickItem[] = uris
-    .slice(0, maxResults)
-    .map((uri) => ({
-      label: path.basename(uri.fsPath),
-      description: workspaceFolder ? toRelativePath(uri, workspaceFolder) : toRelativePath(uri),
-      uri
-    }));
+  const items: FileQuickPickItem[] = limitUrisForSafety(uris, maxResults).map((uri) => ({
+    label: path.basename(uri.fsPath),
+    description: workspaceFolder ? toRelativePath(uri, workspaceFolder) : toRelativePath(uri),
+    uri
+  }));
 
   const picked = await vscode.window.showQuickPick(items, {
     title: 'Tab File Finder Results',
@@ -437,8 +438,24 @@ function getPrimaryWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
 
 function getMaxResults(): number {
   const config = vscode.workspace.getConfiguration('tabFileFinder');
-  const value = config.get<number>('maxResults', 100);
+  const value = config.get<number>('maxResults', 1000);
   return clampNumber(value, 10, 1000);
+}
+
+function limitQuickPickItemsForSafety(items: FileQuickPickItem[], maxResults: number): FileQuickPickItem[] {
+  if (items.length <= maxResults) {
+    return items;
+  }
+
+  return items.filter((_, index) => index < maxResults);
+}
+
+function limitUrisForSafety(uris: vscode.Uri[], maxResults: number): vscode.Uri[] {
+  if (uris.length <= maxResults) {
+    return uris;
+  }
+
+  return uris.filter((_, index) => index < maxResults);
 }
 
 function getWorkspaceSearchSettings(): WorkspaceSearchSettings {

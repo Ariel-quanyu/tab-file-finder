@@ -14,13 +14,14 @@ In large projects, finding the right file or folder can become slow and distract
   - Updates results while you type; you do not need to press Enter before seeing matches.
   - Matches against both item names and relative paths.
   - Works across deeply nested folders.
+  - Lets you scroll through matching results in the Quick Pick list.
   - Uses `📁` for folders and `📄` for files.
   - Opens selected files in the editor.
   - Reveals selected folders in the VS Code Explorer.
 
 - **Generated Item Exclusions**
   - Skips common generated, dependency, and system folders, including `node_modules`, `.git`, `out`, `dist`, `build`, `.quarto`, and `__pycache__`.
-  - Folder exclusions apply to folder contents only, so useful dotfiles and config files such as `.gitignore`, `.env.example`, `.npmrc`, `.editorconfig`, `.prettierrc`, and `.eslintrc` remain searchable.
+  - Folder exclusions apply to folder contents only, so useful dotfiles and config files such as `.gitignore`, `package.json`, `README.md`, `.env.example`, `.npmrc`, `.editorconfig`, `.prettierrc`, and `.eslintrc` remain searchable.
   - Does not exclude `.vscode` by default, so files like `.vscode/settings.json`, `.vscode/launch.json`, and `.vscode/tasks.json` can be found.
   - Skips generated package files such as `*.vsix`.
 
@@ -31,13 +32,14 @@ In large projects, finding the right file or folder can become slow and distract
 
 - **Fast Keyboard Access**
   - Keyboard shortcut for **Search Workspace Files**: **Ctrl+P**.
-  - `Ctrl+P` opens the workspace search from anywhere inside VS Code.
+  - `Ctrl+P` opens Tab File Finder globally in VS Code, including when the integrated terminal has focus.
 
 ## Keyboard Shortcut
 
-- **Ctrl+P** opens Tab File Finder and searches files and folders across the current workspace.
+- **Ctrl+P** opens Tab File Finder globally in VS Code, including from the integrated terminal, and searches files and folders across the current workspace.
 - Start typing to filter workspace files and folders live by name or relative path.
 - Scroll inside the Quick Pick list to browse more matching results.
+- Click outside the Quick Pick to close it.
 - Select a file to open it in the editor, or select a folder to reveal it in the Explorer.
 
 ## Configuration
@@ -62,7 +64,9 @@ Tab File Finder can be customized from VS Code Settings under **Tab File Finder*
 
 - `tabFileFinder.maxResults`
   - Default: `1000`
-  - Used as a safety limit for very large workspaces. Matching results can be scrolled inside the Quick Pick list.
+  - Minimum: `10`
+  - Maximum: `1000`
+  - Optional safety limit for how many matches are loaded into the Quick Pick list. The list uses VS Code's normal Quick Pick scrolling.
 
 - `tabFileFinder.showGeneratedFiles`
   - Default: `false`
