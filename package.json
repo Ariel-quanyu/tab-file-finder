@@ -1,7 +1,7 @@
 {
   "name": "tab-file-finder",
   "displayName": "Tab File Finder",
-  "description": "Quickly find and open files from open tabs or the entire workspace.",
+  "description": "Quickly find files and folders across the entire workspace.",
   "version": "0.0.1",
   "publisher": "local-dev",
   "engines": {
@@ -29,21 +29,70 @@
     "keybindings": [
       {
         "command": "tabFileFinder.searchWorkspaceFiles",
-        "key": "alt+w",
-        "when": "editorTextFocus"
+        "key": "ctrl+p"
       }
     ],
     "configuration": {
       "type": "object",
       "title": "Tab File Finder",
       "properties": {
+        "tabFileFinder.includeFiles": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to include files in search results."
+        },
+        "tabFileFinder.includeFolders": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to include folders in search results."
+        },
+        "tabFileFinder.excludeFolders": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "node_modules",
+            ".git",
+            "out",
+            "dist",
+            "build",
+            ".quarto",
+            "__pycache__"
+          ],
+          "description": "Folder names or relative folder paths to exclude from search."
+        },
+        "tabFileFinder.excludeFiles": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "*.vsix"
+          ],
+          "description": "File names, relative file paths, or wildcard patterns to exclude from search."
+        },
         "tabFileFinder.maxResults": {
           "type": "number",
-          "default": 20,
-          "minimum": 20,
-          "maximum": 50,
-          "enum": [20, 50],
-          "description": "Maximum number of search results shown by Tab File Finder. Choose either 20 or 50."
+          "default": 100,
+          "minimum": 10,
+          "maximum": 1000,
+          "description": "Maximum number of search results shown in the Quick Pick list."
+        },
+        "tabFileFinder.showGeneratedFiles": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether to include generated or dependency files in search results."
+        },
+        "tabFileFinder.searchMode": {
+          "type": "string",
+          "enum": [
+            "filesAndFolders",
+            "filesOnly",
+            "foldersOnly"
+          ],
+          "default": "filesAndFolders",
+          "description": "Controls whether the main search includes files, folders, or both."
         }
       }
     }

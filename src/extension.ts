@@ -3,17 +3,71 @@ import * as vscode from 'vscode';
 
 type FileQuickPickItem = vscode.QuickPickItem & {
   uri: vscode.Uri;
+  entryKind?: WorkspaceItemKind;
 };
 
-type WorkspaceFileEntry = {
+type WorkspaceItemKind = 'file' | 'folder';
+
+type WorkspaceItemEntry = {
   uri: vscode.Uri;
-  fileName: string;
-  fileNameLower: string;
+  kind: WorkspaceItemKind;
+  itemName: string;
+  itemNameLower: string;
   relativePath: string;
   relativePathLower: string;
-  isUsefulFile: boolean;
-  isTopLevelFile: boolean;
 };
+
+type SearchMode = 'filesAndFolders' | 'filesOnly' | 'foldersOnly';
+
+type WorkspaceSearchSettings = {
+  includeFiles: boolean;
+  includeFolders: boolean;
+  excludeFolders: string[];
+  excludeFiles: string[];
+  maxResults: number;
+  showGeneratedFiles: boolean;
+  searchMode: SearchMode;
+};
+
+const defaultExcludedFolders = [
+  'node_modules',
+  '.git',
+  'out',
+  'dist',
+  'build',
+  '.quarto',
+  '__pycache__'
+];
+
+const defaultExcludedFiles = [
+  '*.vsix'
+];
+
+const defaultGeneratedFolders = [
+  ...defaultExcludedFolders,
+  '.next',
+  '.nuxt',
+  '.svelte-kit',
+  '.turbo',
+  '.cache',
+  'coverage',
+  'vendor'
+];
+
+const generatedFileNamePatterns = [
+  /\.vsix$/i,
+  /\.min\.(?:css|js)$/i,
+  /\.map$/i,
+  /\.d\.ts$/i,
+  /package-lock\.json$/i,
+  /yarn\.lock$/i,
+  /pnpm-lock\.yaml$/i
+];
+
+const generatedRelativePathPatterns = [
+  /(^|\/)[^/]*_files\/(?:libs|quarto-html)(\/|$)/i,
+  /(^|\/)[^/]*_files\/.*\.(?:js|css|html|json|png|svg|woff2?|ttf|map)$/i
+];
 
 export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
@@ -67,6 +121,7 @@ async function searchWorkspaceFiles(): Promise<void> {
   }
 
   const quickPick = vscode.window.createQuickPick<FileQuickPickItem>();
+  const settings = getWorkspaceSearchSettings();
   quickPick.title = 'Tab File Finder: Search Workspace Files';
   quickPick.placeholder = 'Type a keyword to search workspace files';
   quickPick.matchOnDescription = true;
@@ -75,17 +130,16 @@ async function searchWorkspaceFiles(): Promise<void> {
   quickPick.items = [];
   quickPick.show();
 
-  const entriesByPath = new Map<string, WorkspaceFileEntry>();
+  const entriesByPath = new Map<string, WorkspaceItemEntry>();
   let quickPickDisposed = false;
 
-  const addEntries = (uris: vscode.Uri[]) => {
-    for (const uri of uris) {
-      if (isExcludedWorkspaceFile(uri) || entriesByPath.has(uri.fsPath)) {
+  const addEntries = (entries: WorkspaceItemEntry[]) => {
+    for (const entry of entries) {
+      if (entriesByPath.has(entry.uri.fsPath)) {
         continue;
       }
 
-      const folder = vscode.workspace.getWorkspaceFolder(uri) ?? workspaceFolder;
-      entriesByPath.set(uri.fsPath, createWorkspaceFileEntry(uri, folder));
+      entriesByPath.set(entry.uri.fsPath, entry);
     }
   };
 
@@ -95,7 +149,7 @@ async function searchWorkspaceFiles(): Promise<void> {
     }
 
     const normalizedKeyword = value.trim().toLowerCase();
-    quickPick.items = getWorkspaceSearchItems([...entriesByPath.values()], normalizedKeyword).slice(0, getMaxResults());
+    quickPick.items = getWorkspaceSearchItems([...entriesByPath.values()], normalizedKeyword).slice(0, settings.maxResults);
   };
 
   const disposables: vscode.Disposable[] = [];
@@ -104,7 +158,11 @@ async function searchWorkspaceFiles(): Promise<void> {
     quickPick.onDidAccept(async () => {
       const picked = quickPick.selectedItems[0];
       if (picked) {
-        await vscode.window.showTextDocument(picked.uri, { preview: false });
+        if (picked.entryKind === 'folder') {
+          await vscode.commands.executeCommand('revealInExplorer', picked.uri);
+        } else {
+          await vscode.window.showTextDocument(picked.uri, { preview: false });
+        }
         quickPick.hide();
       }
     }),
@@ -117,11 +175,7 @@ async function searchWorkspaceFiles(): Promise<void> {
 
   void (async () => {
     try {
-      addEntries(await getTopLevelWorkspaceFileUris());
-      updateItems(quickPick.value);
-
-      const excluded = '**/{node_modules,.git,out,dist,build,.quarto,__pycache__}/**';
-      addEntries(await vscode.workspace.findFiles('**/*', excluded));
+      addEntries(await getWorkspaceItemEntries(settings));
       updateItems(quickPick.value);
     } catch (error) {
       if (!quickPickDisposed) {
@@ -136,124 +190,202 @@ async function searchWorkspaceFiles(): Promise<void> {
   })();
 }
 
-function isExcludedWorkspaceFile(uri: vscode.Uri): boolean {
-  const relativePath = uri.path.toLowerCase();
-  if (/(^|\/)(node_modules|\.git|out|dist|build|\.quarto|__pycache__)(\/|$)/.test(relativePath)) {
+function isExcludedDirectoryPath(relativePath: string, settings: WorkspaceSearchSettings): boolean {
+  const normalizedPath = normalizeRelativePath(relativePath).toLowerCase();
+  const excludedDirectories = settings.excludeFolders.map((folder) => normalizeRelativePath(folder).toLowerCase());
+  const generatedDirectories = settings.showGeneratedFiles ? [] : defaultGeneratedFolders.map((folder) => folder.toLowerCase());
+
+  if (!settings.showGeneratedFiles && generatedRelativePathPatterns.some((pattern) => pattern.test(normalizedPath))) {
     return true;
   }
 
-  if (!relativePath.includes('_files')) {
-    return false;
-  }
+  return [...excludedDirectories, ...generatedDirectories].some((excludedDirectory) => {
+    const normalizedDirectory = excludedDirectory.replace(/^\/+|\/+$/g, '');
 
-  if (/(^|\/)[^\/]*_files\/libs(\/|$)/.test(relativePath)) {
-    return true;
-  }
+    if (!normalizedDirectory) {
+      return false;
+    }
 
-  if (/(^|\/)[^\/]*_files\/quarto-html(\/|$)/.test(relativePath)) {
-    return true;
-  }
+    if (normalizedDirectory.includes('/')) {
+      return normalizedPath === normalizedDirectory || normalizedPath.startsWith(`${normalizedDirectory}/`);
+    }
 
-  return /\.(js|css|html|json|png|svg|woff2?|ttf|map)$/i.test(relativePath);
+    return normalizedPath.split('/').includes(normalizedDirectory);
+  });
 }
 
-function createWorkspaceFileEntry(uri: vscode.Uri, workspaceFolder: vscode.WorkspaceFolder): WorkspaceFileEntry {
+function isGeneratedFilePath(relativePath: string): boolean {
+  const normalizedPath = normalizeRelativePath(relativePath);
+  const fileName = path.basename(normalizedPath);
+  return (
+    generatedFileNamePatterns.some((pattern) => pattern.test(fileName)) ||
+    generatedRelativePathPatterns.some((pattern) => pattern.test(normalizedPath))
+  );
+}
+
+function isExcludedFilePath(relativePath: string, settings: WorkspaceSearchSettings): boolean {
+  const normalizedPath = normalizeRelativePath(relativePath).toLowerCase();
+  const fileName = path.basename(normalizedPath);
+
+  return settings.excludeFiles.some((excludeFile) => {
+    const normalizedPattern = normalizeRelativePath(excludeFile).toLowerCase().replace(/^\/+/, '');
+
+    if (!normalizedPattern) {
+      return false;
+    }
+
+    if (normalizedPattern.startsWith('*.')) {
+      return fileName.endsWith(normalizedPattern.slice(1));
+    }
+
+    if (normalizedPattern.includes('*')) {
+      return wildcardPatternToRegExp(normalizedPattern).test(normalizedPath);
+    }
+
+    if (normalizedPattern.includes('/')) {
+      return normalizedPath === normalizedPattern;
+    }
+
+    return fileName === normalizedPattern;
+  });
+}
+
+function wildcardPatternToRegExp(pattern: string): RegExp {
+  const escapedPattern = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+  return new RegExp(`^${escapedPattern}$`, 'i');
+}
+
+function shouldIncludeWorkspaceItem(kind: WorkspaceItemKind, settings: WorkspaceSearchSettings): boolean {
+  if (kind === 'file') {
+    return settings.includeFiles && settings.searchMode !== 'foldersOnly';
+  }
+
+  return settings.includeFolders && settings.searchMode !== 'filesOnly';
+}
+
+function createWorkspaceItemEntry(
+  uri: vscode.Uri,
+  workspaceFolder: vscode.WorkspaceFolder,
+  kind: WorkspaceItemKind
+): WorkspaceItemEntry {
   const relativePath = normalizeRelativePath(toRelativePath(uri, workspaceFolder));
-  const fileName = path.basename(uri.fsPath);
+  const itemName = path.basename(uri.fsPath);
   return {
     uri,
-    fileName,
-    fileNameLower: fileName.toLowerCase(),
+    kind,
+    itemName,
+    itemNameLower: itemName.toLowerCase(),
     relativePath,
-    relativePathLower: relativePath.toLowerCase(),
-    isUsefulFile: isUsefulProjectFile(relativePath.toLowerCase()),
-    isTopLevelFile: !relativePath.includes('/')
+    relativePathLower: relativePath.toLowerCase()
   };
 }
 
-function isUsefulProjectFile(relativePathLower: string): boolean {
-  const usefulExtensions = new Set([
-    '.qmd', '.r', '.rproj', '.csv', '.md', '.py', '.ipynb', '.js', '.jsx', '.ts', '.tsx', '.html', '.css', '.json', '.tex', '.pdf'
-  ]);
-  const extension = path.extname(relativePathLower);
-  if (usefulExtensions.has(extension)) {
-    return true;
-  }
-
-  return /(^|\/)(sections|figures|results|assets|agents|relatedwork)(\/|$)/.test(relativePathLower);
-}
-
-function getWorkspaceSearchItems(entries: WorkspaceFileEntry[], normalizedKeyword: string): FileQuickPickItem[] {
+function getWorkspaceSearchItems(entries: WorkspaceItemEntry[], normalizedKeyword: string): FileQuickPickItem[] {
   const matchedEntries = entries
     .map((entry) => {
-      const fileNameIndex = normalizedKeyword.length === 0 ? -1 : entry.fileNameLower.indexOf(normalizedKeyword);
+      const itemNameIndex = normalizedKeyword.length === 0 ? -1 : entry.itemNameLower.indexOf(normalizedKeyword);
       const pathIndex = normalizedKeyword.length === 0 ? -1 : entry.relativePathLower.indexOf(normalizedKeyword);
-      const hasFileNameMatch = fileNameIndex !== -1;
+      const hasItemNameMatch = itemNameIndex !== -1;
       const hasPathMatch = pathIndex !== -1;
+      const hasExactItemNameMatch = normalizedKeyword.length > 0 && entry.itemNameLower === normalizedKeyword;
 
       return {
         entry,
-        fileNameIndex: hasFileNameMatch ? fileNameIndex : Number.MAX_SAFE_INTEGER,
+        exactItemNamePriority: hasExactItemNameMatch ? 0 : 1,
+        itemNamePriority: hasItemNameMatch ? 0 : 1,
+        pathPriority: hasPathMatch ? 0 : 1,
+        itemNameIndex: hasItemNameMatch ? itemNameIndex : Number.MAX_SAFE_INTEGER,
         pathIndex: hasPathMatch ? pathIndex : Number.MAX_SAFE_INTEGER,
-        hasFileNameMatch,
+        hasItemNameMatch,
         hasPathMatch,
-        pathDepth: entry.relativePath.split('/').length,
-        pathLength: entry.relativePath.length,
-        topLevelPriority: entry.isTopLevelFile ? 0 : 1,
-        usefulPriority: entry.isUsefulFile ? 0 : 1
+        pathLength: entry.relativePath.length
       };
     })
-    .filter((meta) => normalizedKeyword.length === 0 || meta.hasFileNameMatch || meta.hasPathMatch);
+    .filter((meta) => normalizedKeyword.length === 0 || meta.hasItemNameMatch || meta.hasPathMatch);
 
   matchedEntries.sort((a, b) => {
-    if (a.hasFileNameMatch !== b.hasFileNameMatch) {
-      return a.hasFileNameMatch ? -1 : 1;
+    if (a.exactItemNamePriority !== b.exactItemNamePriority) {
+      return a.exactItemNamePriority - b.exactItemNamePriority;
     }
-    if (a.fileNameIndex !== b.fileNameIndex) {
-      return a.fileNameIndex - b.fileNameIndex;
+    if (a.itemNamePriority !== b.itemNamePriority) {
+      return a.itemNamePriority - b.itemNamePriority;
     }
-    if (a.hasPathMatch !== b.hasPathMatch) {
-      return a.hasPathMatch ? -1 : 1;
+    if (a.itemNameIndex !== b.itemNameIndex) {
+      return a.itemNameIndex - b.itemNameIndex;
     }
-    if (!a.hasFileNameMatch && a.pathIndex !== b.pathIndex) {
+    if (a.pathPriority !== b.pathPriority) {
+      return a.pathPriority - b.pathPriority;
+    }
+    if (a.pathIndex !== b.pathIndex) {
       return a.pathIndex - b.pathIndex;
-    }
-    if (a.topLevelPriority !== b.topLevelPriority) {
-      return a.topLevelPriority - b.topLevelPriority;
-    }
-    if (a.usefulPriority !== b.usefulPriority) {
-      return a.usefulPriority - b.usefulPriority;
-    }
-    if (a.pathDepth !== b.pathDepth) {
-      return a.pathDepth - b.pathDepth;
     }
     if (a.pathLength !== b.pathLength) {
       return a.pathLength - b.pathLength;
+    }
+    if (a.entry.kind !== b.entry.kind) {
+      return a.entry.kind === 'folder' ? -1 : 1;
     }
     return a.entry.relativePath.localeCompare(b.entry.relativePath);
   });
 
   return matchedEntries.map((meta) => ({
-    label: meta.entry.fileName,
+    label: `${meta.entry.kind === 'folder' ? '📁' : '📄'} ${meta.entry.itemName}`,
     description: meta.entry.relativePath,
+    entryKind: meta.entry.kind,
     uri: meta.entry.uri
   }));
 }
 
-async function getTopLevelWorkspaceFileUris(): Promise<vscode.Uri[]> {
+async function getWorkspaceItemEntries(settings: WorkspaceSearchSettings): Promise<WorkspaceItemEntry[]> {
   const folders = vscode.workspace.workspaceFolders ?? [];
-  const results: vscode.Uri[] = [];
+  const results: WorkspaceItemEntry[] = [];
 
   for (const folder of folders) {
-    const entries = await vscode.workspace.fs.readDirectory(folder.uri);
-    for (const [name, fileType] of entries) {
-      if (fileType === vscode.FileType.File) {
-        results.push(vscode.Uri.joinPath(folder.uri, name));
-      }
-    }
+    await collectWorkspaceItemEntries(folder.uri, folder, results, settings);
   }
 
   return results;
+}
+
+async function collectWorkspaceItemEntries(
+  directoryUri: vscode.Uri,
+  workspaceFolder: vscode.WorkspaceFolder,
+  results: WorkspaceItemEntry[],
+  settings: WorkspaceSearchSettings
+): Promise<void> {
+  const children = await vscode.workspace.fs.readDirectory(directoryUri);
+
+  for (const [name, fileType] of children) {
+    const childUri = vscode.Uri.joinPath(directoryUri, name);
+    const relativePath = normalizeRelativePath(toRelativePath(childUri, workspaceFolder));
+
+    if (fileType === vscode.FileType.Directory) {
+      if (isExcludedDirectoryPath(relativePath, settings)) {
+        continue;
+      }
+
+      if (shouldIncludeWorkspaceItem('folder', settings)) {
+        results.push(createWorkspaceItemEntry(childUri, workspaceFolder, 'folder'));
+      }
+
+      await collectWorkspaceItemEntries(childUri, workspaceFolder, results, settings);
+      continue;
+    }
+
+    if (fileType === vscode.FileType.File) {
+      if (isExcludedFilePath(relativePath, settings)) {
+        continue;
+      }
+
+      if (!settings.showGeneratedFiles && isGeneratedFilePath(relativePath)) {
+        continue;
+      }
+
+      if (shouldIncludeWorkspaceItem('file', settings)) {
+        results.push(createWorkspaceItemEntry(childUri, workspaceFolder, 'file'));
+      }
+    }
+  }
 }
 
 async function promptForKeyword(placeHolder: string): Promise<string | undefined> {
@@ -305,11 +437,31 @@ function getPrimaryWorkspaceFolder(): vscode.WorkspaceFolder | undefined {
 
 function getMaxResults(): number {
   const config = vscode.workspace.getConfiguration('tabFileFinder');
-  const value = config.get<number>('maxResults', 20);
-  if (value === 50) {
-    return 50;
+  const value = config.get<number>('maxResults', 100);
+  return clampNumber(value, 10, 1000);
+}
+
+function getWorkspaceSearchSettings(): WorkspaceSearchSettings {
+  const config = vscode.workspace.getConfiguration('tabFileFinder');
+  const searchMode = config.get<SearchMode>('searchMode', 'filesAndFolders');
+
+  return {
+    includeFiles: config.get<boolean>('includeFiles', true),
+    includeFolders: config.get<boolean>('includeFolders', true),
+    excludeFolders: config.get<string[]>('excludeFolders', defaultExcludedFolders),
+    excludeFiles: config.get<string[]>('excludeFiles', defaultExcludedFiles),
+    maxResults: getMaxResults(),
+    showGeneratedFiles: config.get<boolean>('showGeneratedFiles', false),
+    searchMode: ['filesAndFolders', 'filesOnly', 'foldersOnly'].includes(searchMode) ? searchMode : 'filesAndFolders'
+  };
+}
+
+function clampNumber(value: number, minimum: number, maximum: number): number {
+  if (!Number.isFinite(value)) {
+    return minimum;
   }
-  return 20;
+
+  return Math.min(Math.max(value, minimum), maximum);
 }
 
 function toRelativePath(uri: vscode.Uri, workspaceFolder?: vscode.WorkspaceFolder): string {
