@@ -3,7 +3,7 @@
   "displayName": "Tab File Finder",
   "description": "Quickly find files and folders across the entire workspace.",
   "version": "0.0.3",
-  "publisher": "local-dev",
+  "publisher": "ariel-quanyu",
   "engines": {
     "vscode": "^1.90.0"
   },
