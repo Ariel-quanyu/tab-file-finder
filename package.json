@@ -2,7 +2,7 @@
   "name": "tab-file-finder",
   "displayName": "File Finder",
   "description": "Quickly find files and folders across the entire workspace.",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "publisher": "ariel-quanyu",
   "icon": "images/icon.png",
   "engines": {
@@ -12,14 +12,14 @@
     "Other"
   ],
   "keywords": [
-  "file finder",
-  "file search",
-  "folder search",
-  "workspace search",
-  "quick open",
-  "quick pick",
-  "navigation",
-  "productivity"
+    "file finder",
+    "file search",
+    "folder search",
+    "workspace search",
+    "quick open",
+    "quick pick",
+    "navigation",
+    "productivity"
   ],
   "activationEvents": [
     "onCommand:tabFileFinder.searchOpenFiles",
