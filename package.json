@@ -2,7 +2,7 @@
   "name": "tab-file-finder",
   "displayName": "File Finder",
   "description": "Quickly find files and folders across the entire workspace.",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "publisher": "ariel-quanyu",
   "icon": "images/icon.png",
   "engines": {
