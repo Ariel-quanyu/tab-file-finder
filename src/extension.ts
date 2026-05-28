@@ -29,6 +29,15 @@ type WorkspaceSearchSettings = {
   searchMode: SearchMode;
 };
 
+type WorkspaceSearchCache = {
+  key: string;
+  entries?: WorkspaceItemEntry[];
+  indexPromise?: Promise<WorkspaceItemEntry[]>;
+};
+
+const liveSearchDebounceMilliseconds = 150;
+const quickPickResultLimit = 200;
+
 const defaultExcludedFolders = [
   'node_modules',
   '.git',
@@ -69,10 +78,18 @@ const generatedRelativePathPatterns = [
   /(^|\/)[^/]*_files\/.*\.(?:js|css|html|json|png|svg|woff2?|ttf|map)$/i
 ];
 
+let workspaceSearchCache: WorkspaceSearchCache | undefined;
+
 export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.commands.registerCommand('tabFileFinder.searchOpenFiles', searchOpenFiles),
-    vscode.commands.registerCommand('tabFileFinder.searchWorkspaceFiles', searchWorkspaceFiles)
+    vscode.commands.registerCommand('tabFileFinder.searchWorkspaceFiles', searchWorkspaceFiles),
+    vscode.workspace.onDidChangeWorkspaceFolders(clearWorkspaceSearchCache),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration('tabFileFinder')) {
+        clearWorkspaceSearchCache();
+      }
+    })
   );
 }
 
@@ -123,41 +140,60 @@ async function searchWorkspaceFiles(): Promise<void> {
   const quickPick = vscode.window.createQuickPick<FileQuickPickItem>();
   const settings = getWorkspaceSearchSettings();
   quickPick.title = 'Tab File Finder: Search Workspace Files';
-  quickPick.placeholder = 'Type a keyword to search workspace files';
+  quickPick.placeholder = 'Indexing workspace...';
   quickPick.matchOnDescription = true;
   quickPick.ignoreFocusOut = false;
   quickPick.busy = true;
   quickPick.items = [];
   quickPick.show();
 
-  const entriesByPath = new Map<string, WorkspaceItemEntry>();
   let quickPickDisposed = false;
+  let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+  let filterVersion = 0;
+  let indexedEntries: WorkspaceItemEntry[] = [];
+  let indexReady = false;
 
-  const addEntries = (entries: WorkspaceItemEntry[]) => {
-    for (const entry of entries) {
-      if (entriesByPath.has(entry.uri.fsPath)) {
-        continue;
-      }
-
-      entriesByPath.set(entry.uri.fsPath, entry);
-    }
-  };
-
-  const updateItems = (value: string) => {
+  const showSearchResults = (entries: WorkspaceItemEntry[], value: string) => {
     if (quickPickDisposed) {
       return;
     }
 
     const normalizedKeyword = value.trim().toLowerCase();
     quickPick.items = limitQuickPickItemsForSafety(
-      getWorkspaceSearchItems([...entriesByPath.values()], normalizedKeyword),
-      settings.maxResults
+      getWorkspaceSearchItems(entries, normalizedKeyword, settings),
+      getQuickPickResultLimit(settings)
     );
+  };
+
+  const runFilter = (value: string, version: number) => {
+    if (quickPickDisposed || version !== filterVersion || !indexReady) {
+      return;
+    }
+
+    if (value.trim().length === 0) {
+      quickPick.items = [];
+      return;
+    }
+
+    showSearchResults(indexedEntries, value);
+  };
+
+  const scheduleFilter = (value: string) => {
+    const currentFilterVersion = ++filterVersion;
+
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+    }
+
+    debounceTimer = setTimeout(() => {
+      debounceTimer = undefined;
+      runFilter(value, currentFilterVersion);
+    }, liveSearchDebounceMilliseconds);
   };
 
   const disposables: vscode.Disposable[] = [];
   disposables.push(
-    quickPick.onDidChangeValue((value) => updateItems(value)),
+    quickPick.onDidChangeValue((value) => scheduleFilter(value)),
     quickPick.onDidAccept(async () => {
       const picked = quickPick.selectedItems[0];
       if (picked) {
@@ -171,6 +207,9 @@ async function searchWorkspaceFiles(): Promise<void> {
     }),
     quickPick.onDidHide(() => {
       quickPickDisposed = true;
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+      }
       disposables.forEach((disposable) => disposable.dispose());
       quickPick.dispose();
     })
@@ -178,19 +217,26 @@ async function searchWorkspaceFiles(): Promise<void> {
 
   void (async () => {
     try {
-      addEntries(await getWorkspaceItemEntries(settings));
-      updateItems(quickPick.value);
-    } catch (error) {
-      if (!quickPickDisposed) {
-        const message = error instanceof Error ? error.message : String(error);
-        vscode.window.showErrorMessage(`Unable to search workspace files: ${message}`);
-      }
-    } finally {
+      indexedEntries = await getWorkspaceItemEntries(settings);
+      indexReady = true;
+
       if (!quickPickDisposed) {
         quickPick.busy = false;
+        quickPick.placeholder = 'Type to search files and folders...';
+        scheduleFilter(quickPick.value);
+      }
+    } catch (error) {
+      if (!quickPickDisposed) {
+        quickPick.busy = false;
+        const message = error instanceof Error ? error.message : String(error);
+        vscode.window.showErrorMessage(`Unable to index workspace files: ${message}`);
       }
     }
   })();
+}
+
+function clearWorkspaceSearchCache(): void {
+  workspaceSearchCache = undefined;
 }
 
 function isExcludedDirectoryPath(relativePath: string, settings: WorkspaceSearchSettings): boolean {
@@ -283,8 +329,13 @@ function createWorkspaceItemEntry(
   };
 }
 
-function getWorkspaceSearchItems(entries: WorkspaceItemEntry[], normalizedKeyword: string): FileQuickPickItem[] {
+function getWorkspaceSearchItems(
+  entries: WorkspaceItemEntry[],
+  normalizedKeyword: string,
+  settings: WorkspaceSearchSettings
+): FileQuickPickItem[] {
   const matchedEntries = entries
+    .filter((entry) => shouldIncludeWorkspaceItem(entry.kind, settings))
     .map((entry) => {
       const itemNameIndex = normalizedKeyword.length === 0 ? -1 : entry.itemNameLower.indexOf(normalizedKeyword);
       const pathIndex = normalizedKeyword.length === 0 ? -1 : entry.relativePathLower.indexOf(normalizedKeyword);
@@ -340,55 +391,148 @@ function getWorkspaceSearchItems(entries: WorkspaceItemEntry[], normalizedKeywor
 }
 
 async function getWorkspaceItemEntries(settings: WorkspaceSearchSettings): Promise<WorkspaceItemEntry[]> {
-  const folders = vscode.workspace.workspaceFolders ?? [];
-  const results: WorkspaceItemEntry[] = [];
+  const cacheKey = getWorkspaceSearchCacheKey(settings);
+  if (workspaceSearchCache?.key === cacheKey) {
+    if (workspaceSearchCache.entries) {
+      return workspaceSearchCache.entries;
+    }
 
-  for (const folder of folders) {
-    await collectWorkspaceItemEntries(folder.uri, folder, results, settings);
+    if (workspaceSearchCache.indexPromise) {
+      return workspaceSearchCache.indexPromise;
+    }
   }
 
-  return results;
+  const indexPromise = collectWorkspaceItemEntryCache(settings);
+  workspaceSearchCache = {
+    key: cacheKey,
+    indexPromise
+  };
+
+  try {
+    const entries = await indexPromise;
+    if (workspaceSearchCache?.key === cacheKey && workspaceSearchCache.indexPromise === indexPromise) {
+      workspaceSearchCache = {
+        key: cacheKey,
+        entries
+      };
+    }
+    return entries;
+  } catch (error) {
+    if (workspaceSearchCache?.key === cacheKey && workspaceSearchCache.indexPromise === indexPromise) {
+      clearWorkspaceSearchCache();
+    }
+    throw error;
+  }
 }
 
-async function collectWorkspaceItemEntries(
-  directoryUri: vscode.Uri,
-  workspaceFolder: vscode.WorkspaceFolder,
-  results: WorkspaceItemEntry[],
-  settings: WorkspaceSearchSettings
-): Promise<void> {
-  const children = await vscode.workspace.fs.readDirectory(directoryUri);
+async function collectWorkspaceItemEntryCache(settings: WorkspaceSearchSettings): Promise<WorkspaceItemEntry[]> {
+  const results: WorkspaceItemEntry[] = [];
+  const excludeGlob = getWorkspaceFindFilesExcludeGlob(settings);
+  const candidateUris = await vscode.workspace.findFiles('**/*', excludeGlob);
 
-  for (const [name, fileType] of children) {
-    const childUri = vscode.Uri.joinPath(directoryUri, name);
-    const relativePath = normalizeRelativePath(toRelativePath(childUri, workspaceFolder));
-
-    if (fileType === vscode.FileType.Directory) {
-      if (isExcludedDirectoryPath(relativePath, settings)) {
-        continue;
-      }
-
-      if (shouldIncludeWorkspaceItem('folder', settings)) {
-        results.push(createWorkspaceItemEntry(childUri, workspaceFolder, 'folder'));
-      }
-
-      await collectWorkspaceItemEntries(childUri, workspaceFolder, results, settings);
+  for (const uri of candidateUris) {
+    const folder = vscode.workspace.getWorkspaceFolder(uri);
+    if (!folder) {
       continue;
     }
 
-    if (fileType === vscode.FileType.File) {
-      if (isExcludedFilePath(relativePath, settings)) {
-        continue;
-      }
+    const relativePath = normalizeRelativePath(toRelativePath(uri, folder));
+    if (isExcludedFilePath(relativePath, settings) || (!settings.showGeneratedFiles && isGeneratedFilePath(relativePath))) {
+      continue;
+    }
 
-      if (!settings.showGeneratedFiles && isGeneratedFilePath(relativePath)) {
-        continue;
-      }
+    results.push(createWorkspaceItemEntry(uri, folder, 'file'));
+    collectFolderEntriesFromFilePath(uri, folder, settings, results);
+  }
 
-      if (shouldIncludeWorkspaceItem('file', settings)) {
-        results.push(createWorkspaceItemEntry(childUri, workspaceFolder, 'file'));
-      }
+  return getUniqueWorkspaceItemEntries(results);
+}
+
+function getUniqueWorkspaceItemEntries(entries: WorkspaceItemEntry[]): WorkspaceItemEntry[] {
+  const entriesByPath = new Map<string, WorkspaceItemEntry>();
+
+  for (const entry of entries) {
+    if (!entriesByPath.has(entry.uri.fsPath)) {
+      entriesByPath.set(entry.uri.fsPath, entry);
     }
   }
+
+  return [...entriesByPath.values()];
+}
+
+function getWorkspaceSearchCacheKey(settings: WorkspaceSearchSettings): string {
+  const workspaceFolders = (vscode.workspace.workspaceFolders ?? []).map((folder) =>
+    normalizeRelativePath(folder.uri.fsPath).toLowerCase()
+  );
+
+  return JSON.stringify({
+    workspaceFolders,
+    excludeFolders: settings.excludeFolders.map((folder) => normalizeRelativePath(folder).toLowerCase()),
+    excludeFiles: settings.excludeFiles.map((file) => normalizeRelativePath(file).toLowerCase()),
+    showGeneratedFiles: settings.showGeneratedFiles
+  });
+}
+
+function collectFolderEntriesFromFilePath(
+  fileUri: vscode.Uri,
+  workspaceFolder: vscode.WorkspaceFolder,
+  settings: WorkspaceSearchSettings,
+  results: WorkspaceItemEntry[]
+): void {
+  const relativeFilePath = normalizeRelativePath(toRelativePath(fileUri, workspaceFolder));
+  const pathParts = relativeFilePath.split('/').slice(0, -1);
+
+  for (let index = 0; index < pathParts.length; index += 1) {
+    const folderRelativePath = pathParts.slice(0, index + 1).join('/');
+
+    if (isExcludedDirectoryPath(folderRelativePath, settings)) {
+      continue;
+    }
+
+    const folderUri = vscode.Uri.joinPath(workspaceFolder.uri, ...pathParts.slice(0, index + 1));
+    results.push(createWorkspaceItemEntry(folderUri, workspaceFolder, 'folder'));
+  }
+}
+
+function getWorkspaceFindFilesExcludeGlob(settings: WorkspaceSearchSettings): string {
+  const excludedFolders = [
+    ...settings.excludeFolders,
+    ...(settings.showGeneratedFiles ? [] : defaultGeneratedFolders)
+  ]
+    .map((folder) => normalizeRelativePath(folder).replace(/^\/+|\/+$/g, ''))
+    .filter((folder) => folder.length > 0);
+
+  const folderExcludes = excludedFolders.map((folder) =>
+    folder.includes('/') ? `${escapeGlobPattern(folder)}/**` : `**/${escapeGlobPattern(folder)}/**`
+  );
+
+  const fileExcludes = settings.excludeFiles
+    .map((file) => normalizeRelativePath(file).replace(/^\/+/, ''))
+    .filter((file) => file.length > 0)
+    .map((file) => (file.includes('/') ? file : `**/${file}`));
+
+  const generatedFileExcludes = settings.showGeneratedFiles ? [] : [
+    '**/*.vsix',
+    '**/*.min.css',
+    '**/*.min.js',
+    '**/*.map',
+    '**/*.d.ts',
+    '**/package-lock.json',
+    '**/yarn.lock',
+    '**/pnpm-lock.yaml',
+    '**/*_files/libs/**',
+    '**/*_files/quarto-html/**'
+  ];
+
+  return `{${[...folderExcludes, ...fileExcludes, ...generatedFileExcludes].join(',')}}`;
+}
+
+function escapeGlobPattern(value: string): string {
+  return normalizeRelativePath(value).replace(/[{}[\]\\]/g, (character) => `[${character}]`);
+}
+
+function getQuickPickResultLimit(settings: WorkspaceSearchSettings): number {
+  return Math.min(settings.maxResults, quickPickResultLimit);
 }
 
 async function promptForKeyword(placeHolder: string): Promise<string | undefined> {
