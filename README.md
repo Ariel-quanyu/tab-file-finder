@@ -1,6 +1,12 @@
-# File Finder (VS Code Extension)
+# File Finder 
 
-File Finder is a Visual Studio Code extension that helps developers quickly locate files and folders across the current workspace. Its primary command, **File Finder: Search Workspace Files**, provides live search by item name and relative path so you can navigate large projects without leaving the editor.
+File Finder helps developers quickly locate files and folders across the current workspace or open an exact path from elsewhere on the local file system. Its primary command, **File Finder: Search Workspace Files**, provides live search by item name, relative path, or exact path so you can navigate large projects without leaving the editor.
+
+## Quick Start
+
+Press **Ctrl+P** anywhere in VS Code—including when the integrated terminal has focus—to open **File Finder: Search Workspace Files**.
+
+Start typing a file name, folder name, relative path, or exact path. Results appear live; select an item and press **Enter** to open the file or reveal the folder.
 
 ## Main Problem It Solves
 
@@ -19,6 +25,14 @@ In large projects, finding the right file or folder can become slow and distract
   - Opens selected files in the editor.
   - Reveals selected folders in the VS Code Explorer.
 
+- **Exact Path Navigation**
+  - Opens files and reveals folders using complete absolute paths.
+  - Supports Windows and POSIX paths, quoted paths, `~` home paths, and `file://` URIs.
+  - Supports paths relative to each folder in a multi-root workspace.
+  - Displays the resolved path as a selectable result.
+  - Requires an explicit click or **Enter** before opening.
+  - Shows clear feedback when a path cannot be found.
+    
 - **Generated Item Exclusions**
   - Skips common generated, dependency, and system folders, including `node_modules`, `.git`, `out`, `dist`, `build`, `.quarto`, and `__pycache__`.
   - Folder exclusions apply to folder contents only, so useful dotfiles and config files such as `.gitignore`, `package.json`, `README.md`, `.env.example`, `.npmrc`, `.editorconfig`, `.prettierrc`, and `.eslintrc` remain searchable.
@@ -30,14 +44,10 @@ In large projects, finding the right file or folder can become slow and distract
   - Searches only files currently open in VS Code tabs/documents.
   - This command is optional. The main recommended workflow is workspace search with `Ctrl+P`.
 
-- **Fast Keyboard Access**
-  - Keyboard shortcut for **Search Workspace Files**: **Ctrl+P**.
-  - `Ctrl+P` opens File Finder globally in VS Code, including when the integrated terminal has focus.
-
 ## Keyboard Shortcut
 
 - **Ctrl+P** opens File Finder globally in VS Code, including from the integrated terminal, and searches files and folders across the current workspace.
-- Start typing to filter workspace files and folders live by name or relative path.
+- Start typing to filter workspace items by name or relative path, or paste an exact path to open a file or reveal a folder.
 - Scroll inside the Quick Pick list to browse more matching results.
 - Click outside the Quick Pick to close it.
 - Select a file to open it in the editor, or select a folder to reveal it in the Explorer.
