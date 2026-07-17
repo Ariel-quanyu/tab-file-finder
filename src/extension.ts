@@ -1,9 +1,12 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
+import { normalizeInputForFs, stripSurroundingQuotes } from './pathUtils';
+import * as fsNode from 'fs';
 
 type FileQuickPickItem = vscode.QuickPickItem & {
   uri: vscode.Uri;
   entryKind?: WorkspaceItemKind;
+  alwaysShow?: boolean;
 };
 
 type WorkspaceItemKind = 'file' | 'folder';
@@ -36,6 +39,7 @@ type WorkspaceSearchCache = {
 };
 
 const liveSearchDebounceMilliseconds = 150;
+const workspaceIndexRefreshDebounceMilliseconds = 400;
 const quickPickResultLimit = 200;
 
 const defaultExcludedFolders = [
@@ -79,17 +83,25 @@ const generatedRelativePathPatterns = [
 ];
 
 let workspaceSearchCache: WorkspaceSearchCache | undefined;
+const workspaceSearchCacheDidRefresh = new vscode.EventEmitter<void>();
 
 export function activate(context: vscode.ExtensionContext): void {
+  const workspaceFileSystemWatcher = vscode.workspace.createFileSystemWatcher('**/*');
+  const scheduleWorkspaceSearchCacheRefresh = createWorkspaceSearchCacheRefreshScheduler();
+
   context.subscriptions.push(
     vscode.commands.registerCommand('tabFileFinder.searchOpenFiles', searchOpenFiles),
     vscode.commands.registerCommand('tabFileFinder.searchWorkspaceFiles', searchWorkspaceFiles),
-    vscode.workspace.onDidChangeWorkspaceFolders(clearWorkspaceSearchCache),
+    workspaceFileSystemWatcher,
+    workspaceFileSystemWatcher.onDidCreate(scheduleWorkspaceSearchCacheRefresh),
+    workspaceFileSystemWatcher.onDidDelete(scheduleWorkspaceSearchCacheRefresh),
+    vscode.workspace.onDidChangeWorkspaceFolders(refreshWorkspaceSearchCache),
     vscode.workspace.onDidChangeConfiguration((event) => {
       if (event.affectsConfiguration('tabFileFinder')) {
-        clearWorkspaceSearchCache();
+        refreshWorkspaceSearchCache();
       }
-    })
+    }),
+    workspaceSearchCacheDidRefresh
   );
 }
 
@@ -150,6 +162,11 @@ async function searchWorkspaceFiles(): Promise<void> {
   let quickPickDisposed = false;
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
   let filterVersion = 0;
+  let indexRefreshVersion = 0;
+  let resolveVersion = 0;
+  let lastResolvePromise: Promise<void> | undefined;
+  let exactResolvedItems: FileQuickPickItem[] | undefined;
+  let isOpening = false;
   let indexedEntries: WorkspaceItemEntry[] = [];
   let indexReady = false;
 
@@ -159,10 +176,19 @@ async function searchWorkspaceFiles(): Promise<void> {
     }
 
     const normalizedKeyword = value.trim().toLowerCase();
-    quickPick.items = limitQuickPickItemsForSafety(
+    const workspaceItems = limitQuickPickItemsForSafety(
       getWorkspaceSearchItems(entries, normalizedKeyword, settings),
       getQuickPickResultLimit(settings)
     );
+
+    // If we have exact-resolved path items, merge them at the front and ensure alwaysShow
+    if (exactResolvedItems && exactResolvedItems.length > 0) {
+      exactResolvedItems = exactResolvedItems.map((it) => ({ ...it, alwaysShow: true }));
+      const merged = [...exactResolvedItems, ...workspaceItems.filter((w) => !exactResolvedItems!.some((e) => e.uri.fsPath === (w as any).uri?.fsPath))];
+      quickPick.items = limitQuickPickItemsForSafety(merged as FileQuickPickItem[], getQuickPickResultLimit(settings));
+    } else {
+      quickPick.items = workspaceItems;
+    }
   };
 
   const runFilter = (value: string, version: number) => {
@@ -171,6 +197,12 @@ async function searchWorkspaceFiles(): Promise<void> {
     }
 
     if (value.trim().length === 0) {
+      // If there's an exact resolved item (e.g. user pasted a full path), show it even when no fuzzy keyword
+      if (exactResolvedItems && exactResolvedItems.length > 0) {
+        quickPick.items = limitQuickPickItemsForSafety(exactResolvedItems, getQuickPickResultLimit(settings));
+        return;
+      }
+
       quickPick.items = [];
       return;
     }
@@ -191,18 +223,133 @@ async function searchWorkspaceFiles(): Promise<void> {
     }, liveSearchDebounceMilliseconds);
   };
 
-  const disposables: vscode.Disposable[] = [];
-  disposables.push(
-    quickPick.onDidChangeValue((value) => scheduleFilter(value)),
-    quickPick.onDidAccept(async () => {
-      const picked = quickPick.selectedItems[0];
-      if (picked) {
-        if (picked.entryKind === 'folder') {
-          await vscode.commands.executeCommand('revealInExplorer', picked.uri);
-        } else {
-          await vscode.window.showTextDocument(picked.uri, { preview: false });
+  async function tryResolveExact(value: string, myResolveVersion: number) {
+    exactResolvedItems = undefined;
+    if (quickPickDisposed) return;
+
+    const raw = stripSurroundingQuotes(value.trim());
+    if (raw.length === 0) return;
+
+    // Only attempt exact resolution when input looks like a path or file URI
+    const looksLikePath = /(^~)|(^file:\/\/)|[\\\/]/.test(raw) || path.isAbsolute(normalizeInputForFs(raw));
+    if (!looksLikePath) return;
+
+    quickPick.busy = true;
+    try {
+      const fsPath = normalizeInputForFs(raw);
+      const candidates: vscode.Uri[] = [];
+
+      // file:// or absolute path
+      if (path.isAbsolute(fsPath)) {
+        const uri = vscode.Uri.file(fsPath);
+        try {
+          const stat = await vscode.workspace.fs.stat(uri);
+          if (stat.type & vscode.FileType.File) {
+            candidates.push(uri);
+          } else if (stat.type & vscode.FileType.Directory) {
+            candidates.push(uri);
+          }
+        } catch {
+          // fallback to Node fs existence check
+          try {
+            if (fsNode.existsSync(fsPath)) {
+              candidates.push(uri);
+            }
+          } catch {
+            // ignore
+          }
         }
-        quickPick.hide();
+      }
+
+      // workspace-relative: try each workspace folder
+      if (candidates.length === 0) {
+        for (const folder of vscode.workspace.workspaceFolders ?? []) {
+          const joined = path.join(folder.uri.fsPath, fsPath);
+          const uri = vscode.Uri.file(joined);
+          try {
+            const stat = await vscode.workspace.fs.stat(uri);
+            candidates.push(uri);
+          } catch {
+            // fallback to Node fs
+            try {
+              if (fsNode.existsSync(joined)) {
+                candidates.push(uri);
+              }
+            } catch {}
+          }
+        }
+      }
+
+      // If we have candidates and this resolve is still current, show them
+      if (quickPickDisposed || myResolveVersion !== resolveVersion) {
+        return;
+      }
+
+      if (candidates.length > 0) {
+        exactResolvedItems = candidates.map((uri) => {
+          const fullPath = normalizeInputForFs(uri.fsPath);
+          const item: FileQuickPickItem = {
+            label: path.basename(uri.fsPath),
+            description: fullPath,
+            uri,
+            alwaysShow: true
+          };
+          return item;
+        });
+
+        // Prefer showing exact matches first, but keep existing fuzzy items after
+        const existing = quickPick.items ?? [];
+        const merged = [...exactResolvedItems, ...existing.filter((ex) => !exactResolvedItems?.some((e) => e.uri.fsPath === (ex as any).uri?.fsPath))];
+        quickPick.items = limitQuickPickItemsForSafety(merged as FileQuickPickItem[], getQuickPickResultLimit(settings));
+      }
+    } finally {
+      if (!quickPickDisposed) quickPick.busy = false;
+    }
+  }
+
+  const disposables: vscode.Disposable[] = [];
+    disposables.push(
+    quickPick.onDidChangeValue((value) => {
+      // kick off exact-path resolve; it uses resolveVersion to ignore stale results
+      const myResolveVersion = ++resolveVersion;
+      lastResolvePromise = tryResolveExact(value, myResolveVersion);
+      scheduleFilter(value);
+    }),
+    workspaceSearchCacheDidRefresh.event(() => {
+      void refreshIndex();
+    }),
+    quickPick.onDidAccept(async () => {
+      if (quickPickDisposed) return;
+      if (isOpening) return;
+      isOpening = true;
+
+      try {
+        // if an exact resolve is in flight, wait for it
+        const pending = lastResolvePromise;
+        if (pending) {
+          await pending;
+        }
+
+        const picked = quickPick.selectedItems[0] ?? quickPick.activeItems[0] ?? quickPick.items[0];
+        if (!picked) {
+          vscode.window.showInformationMessage('No item selected to open.');
+          return;
+        }
+
+        try {
+          if (picked.entryKind === 'folder') {
+            await vscode.commands.executeCommand('revealInExplorer', picked.uri);
+          } else {
+            await vscode.window.showTextDocument(picked.uri, { preview: false });
+          }
+          quickPick.hide();
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          vscode.window.showErrorMessage(`Unable to open item: ${message}`);
+          // keep picker open
+        }
+      } finally {
+        isOpening = false;
       }
     }),
     quickPick.onDidHide(() => {
@@ -215,28 +362,63 @@ async function searchWorkspaceFiles(): Promise<void> {
     })
   );
 
-  void (async () => {
+  const refreshIndex = async () => {
+    const currentRefreshVersion = ++indexRefreshVersion;
+
+    if (!quickPickDisposed) {
+      indexReady = false;
+      quickPick.busy = true;
+    }
+
     try {
-      indexedEntries = await getWorkspaceItemEntries(settings);
+      const entries = await getWorkspaceItemEntries(settings);
+
+      if (quickPickDisposed || currentRefreshVersion !== indexRefreshVersion) {
+        return;
+      }
+
+      indexedEntries = entries;
       indexReady = true;
 
-      if (!quickPickDisposed) {
-        quickPick.busy = false;
-        quickPick.placeholder = 'Type to search files and folders...';
-        scheduleFilter(quickPick.value);
-      }
+      quickPick.busy = false;
+      quickPick.placeholder = 'Type to search files and folders...';
+      scheduleFilter(quickPick.value);
     } catch (error) {
-      if (!quickPickDisposed) {
-        quickPick.busy = false;
-        const message = error instanceof Error ? error.message : String(error);
-        vscode.window.showErrorMessage(`Unable to index workspace files: ${message}`);
+      if (quickPickDisposed || currentRefreshVersion !== indexRefreshVersion) {
+        return;
       }
+
+      quickPick.busy = false;
+      const message = error instanceof Error ? error.message : String(error);
+      vscode.window.showErrorMessage(`Unable to index workspace files: ${message}`);
     }
-  })();
+  };
+
+  void refreshIndex();
 }
 
 function clearWorkspaceSearchCache(): void {
   workspaceSearchCache = undefined;
+}
+
+function refreshWorkspaceSearchCache(): void {
+  clearWorkspaceSearchCache();
+  workspaceSearchCacheDidRefresh.fire();
+}
+
+function createWorkspaceSearchCacheRefreshScheduler(): (uri: vscode.Uri) => void {
+  let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+
+  return () => {
+    if (refreshTimer) {
+      clearTimeout(refreshTimer);
+    }
+
+    refreshTimer = setTimeout(() => {
+      refreshTimer = undefined;
+      refreshWorkspaceSearchCache();
+    }, workspaceIndexRefreshDebounceMilliseconds);
+  };
 }
 
 function isExcludedDirectoryPath(relativePath: string, settings: WorkspaceSearchSettings): boolean {

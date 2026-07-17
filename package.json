@@ -2,8 +2,12 @@
   "name": "tab-file-finder",
   "displayName": "File Finder",
   "description": "Quickly find files and folders across the entire workspace.",
-  "version": "0.0.8",
+  "version": "0.0.9",
   "publisher": "ariel-quanyu",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Ariel-qianyu/tab-file-finder.git"
+  },
   "icon": "images/icon.png",
   "engines": {
     "vscode": "^1.90.0"
@@ -118,12 +122,15 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile",
     "lint": "eslint src --ext ts",
-    "test": "echo 'No automated tests yet.'"
+    "test": "mocha --ui bdd --recursive ./out/test --exit --ignore './out/test/suite/**' && node ./out/test/runTest.js"
   },
   "devDependencies": {
+    "@types/mocha": "^10.0.1",
     "@types/node": "^20.14.12",
     "@types/vscode": "^1.90.0",
+    "@vscode/test-electron": "^3.0.0",
     "eslint": "^9.8.0",
+    "mocha": "^10.2.0",
     "typescript": "^5.5.4"
   }
 }

@@ -1,0 +1,12 @@
+node_modules/
+.vscode/
+.vscode-test/
+src/
+src/**
+out/test/
+out/integration/
+tmp_diff*
+*.vsix
+.git/
+**/tmp_*
+**/*.log
